@@ -84,7 +84,7 @@ function glob(zip) {
   function* glob(pattern) {
       for (const f of z.getEntries()) {
           if (f.isDirectory) continue
-          if (minimatch(f.entryName, `*/${pattern}`)) {
+          if (minimatch(f.entryName, pattern)) {
               yield {
                   name: f.entryName.replaceAll("\\", "/").split("/").slice(1).join("/"),
                   data: () => f.getData().toString("utf8"),
@@ -248,11 +248,10 @@ export default async function run({ github, context, dryRun = false }) {
     // @ts-ignore
     const zBuf = Buffer.from(zip)
     const globFn = glob(zBuf);
-  
 
     console.group("Collating base JSON...");
     const data = [];
-    for (const f of globFn("data/json/**/*.json")) {
+    for (const f of globFn("*/data/json/**/*.json")) {
         const filename = f.name;
         const objs = breakJSONIntoSingleObjects(f.data())
         for (const { obj, start, end } of objs) {
@@ -267,7 +266,7 @@ export default async function run({ github, context, dryRun = false }) {
     console.group("Collating mods JSON...");
     /** @type {Record<string, { info: any, data: any[] }>} */
     const dataMods = {};
-    for (const i of globFn("data/mods/*/modinfo.json")) {
+    for (const i of globFn("*/data/mods/*/modinfo.json")) {
       const modname = i.name.split("/")[2];
       const modInfo = JSON.parse(i.data()).find(i => i.type === "MOD_INFO");
       if (!modInfo || modInfo.obsolete) {
@@ -275,7 +274,7 @@ export default async function run({ github, context, dryRun = false }) {
       }
       const modId = modInfo.id;
       dataMods[modId] = { info: modInfo, data: [] };
-      for (const f of globFn(`data/mods/${modname}/**/*.json`)) {
+      for (const f of globFn(`*/data/mods/${modname}/**/*.json`)) {
         const filename = f.name;
         const objs = breakJSONIntoSingleObjects(f.data());
         for (const { obj, start, end } of objs) {
@@ -308,48 +307,64 @@ export default async function run({ github, context, dryRun = false }) {
       await createBlob("data/latest.gz/all_mods.json", zlib.gzipSync(allModsJson));
     }
 
+    console.group("Downloading translations...");
 
-    console.group("Compiling lang JSON...");
+    const translationArtifacts = await github.rest.actions.listArtifactsForRepo({
+      owner: "CleverRaven",
+      repo: "Cataclysm-DDA",
+      name: "translations",
+      per_page: 100
+    });
 
-    // Measure both CPU time and wall time
-    console.time("lang JSON");
-    const cpuUsage = process.cpuUsage();
-    const langs = await Promise.all(
-      [...globFn("lang/po/*.po")].map(async (f) => {
-        const lang = path.basename(f.name, ".po");
-        const json = postprocessPoJson(
-          po2json.parse(f.data()),
-        );
-        const jsonStr = JSON.stringify(json);
-        await createBlob(`${pathBase}/lang/${lang}.json`, jsonStr);
-        if (tag_name === latestRelease)
-          await createBlob(
-            `data/latest.gz/lang/${lang}.json`,
-            zlib.gzipSync(jsonStr),
+    const relevantTranslationArtifact = translationArtifacts.data.artifacts.find(a => a.workflow_run?.head_sha === release.target_commitish)
+
+    let langs = []
+    if (relevantTranslationArtifact) {
+      console.log("Found translations")
+
+      const { data: zip } = await github.rest.actions.downloadArtifact({
+        owner: "CleverRaven",
+        repo: "Cataclysm-DDA",
+        artifact_id: relevantTranslationArtifact.id,
+        archive_format: "zip"
+      });
+      // @ts-expect-error
+      const zBuf = Buffer.from(zip)
+      const globFn = glob(zBuf);
+      langs = await Promise.all(
+        [...globFn("lang/po/*.po")].map(async (f) => {
+          const lang = path.basename(f.name, ".po");
+          const json = postprocessPoJson(
+            po2json.parse(f.data()),
           );
-
-        // To support searching Chinese translations by pinyin
-        if (lang.startsWith("zh_")) {
-          const pinyin = toPinyin(data, json);
-          const pinyinStr = JSON.stringify(pinyin);
-          await createBlob(`${pathBase}/lang/${lang}_pinyin.json`, pinyinStr);
+          const jsonStr = JSON.stringify(json);
+          await createBlob(`${pathBase}/lang/${lang}.json`, jsonStr);
           if (tag_name === latestRelease)
             await createBlob(
-              `data/latest.gz/lang/${lang}_pinyin.json`,
-              zlib.gzipSync(pinyinStr),
+              `data/latest.gz/lang/${lang}.json`,
+              zlib.gzipSync(jsonStr),
             );
-        }
-        return lang;
-      }),
-    );
-    console.timeEnd("lang JSON");
-    const newUsage = process.cpuUsage(cpuUsage);
-    console.log(
-      `CPU time: ${newUsage.user / 1e6}s user, ${newUsage.system / 1e6}s system`,
-    );
-    console.log(`Found ${Object.keys(langs).length} languages.`);
-    console.groupEnd();
 
+          // To support searching Chinese translations by pinyin
+          if (lang.startsWith("zh_")) {
+            const pinyin = toPinyin(data, json);
+            const pinyinStr = JSON.stringify(pinyin);
+            await createBlob(`${pathBase}/lang/${lang}_pinyin.json`, pinyinStr);
+            if (tag_name === latestRelease)
+              await createBlob(
+                `data/latest.gz/lang/${lang}_pinyin.json`,
+                zlib.gzipSync(pinyinStr),
+              );
+          }
+          return lang;
+        }),
+      );
+      console.log(`Found ${Object.keys(langs).length} languages.`);
+    } else {
+      console.log(`No translation artifact found for ${release.target_commitish}`)
+    }
+
+    console.groupEnd();
 
     newBuilds.push({
       build_number: tag_name,
