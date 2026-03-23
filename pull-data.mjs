@@ -193,7 +193,9 @@ export default async function run({ github, context, dryRun = false }) {
           accept: "application/vnd.github.raw",
         },
       }
-    );
+    ).catch(e => {
+      return { data: { content: "[]" } }
+    });
     return data;
   }
 
