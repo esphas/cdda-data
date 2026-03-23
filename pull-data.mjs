@@ -183,20 +183,22 @@ export default async function run({ github, context, dryRun = false }) {
    * @param {string} path
    */
   async function fetchRawFile(path) {
-    const { data } = await github.request(
-      "GET /repos/{owner}/{repo}/contents/{path}",
-      {
-        ...context.repo,
-        path,
-        ref: baseCommit.sha,
-        headers: {
-          accept: "application/vnd.github.raw",
-        },
-      }
-    ).catch(e => {
-      return { data: { content: "[]" } }
-    });
-    return data;
+    try {
+      const { data } = await github.request(
+        "GET /repos/{owner}/{repo}/contents/{path}",
+        {
+          ...context.repo,
+          path,
+          ref: baseCommit.sha,
+          headers: {
+            accept: "application/vnd.github.raw",
+          },
+        }
+      );
+      return data;
+    } catch (e) {
+      return "[]";
+    }
   }
 
   /**
